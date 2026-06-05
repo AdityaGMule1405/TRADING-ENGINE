@@ -2,73 +2,42 @@ import yfinance as yf
 import pandas as pd
 import ta
 import sqlite3
-from datetime import datetime
-
-DB_NAME = 'market_data.db'
-
-def create_connection():
-    conn = None
-    try:
-        conn = sqlite3.connect(DB_NAME)
-        return conn
-    except sqlite3.Error as e:
-        print(e)
-    return conn
-
-def insert_signal(timestamp, ticker, rsi, volume, ai_thesis):
-    conn = create_connection()
-    if conn:
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO signals (timestamp, ticker, rsi, volume, ai_thesis)
-                VALUES (?, ?, ?, ?, ?)
-            """, (timestamp, ticker, rsi, volume, ai_thesis))
-            conn.commit()
-            print(f"Inserted signal for {ticker}: RSI={rsi}, Volume={volume}")
-        except sqlite3.Error as e:
-            print(e)
-        finally:
-            conn.close()
+import datetime
 
 def run_scanner():
     tickers = ['RELIANCE.NS', 'TATAPOWER.NS', 'ICICIBANK.NS']
-    
-    for ticker in tickers:
-        print(f"Processing {ticker}...")
+    conn = sqlite3.connect('market_data.db')
+    cursor = conn.cursor()
+
+    for ticker_symbol in tickers:
         try:
-            data = yf.download(ticker, period="1mo", interval="1d")
-            
+            data = yf.download(ticker_symbol, period='1mo')
             if data.empty:
-                print(f"No data downloaded for {ticker}. Skipping.")
+                print(f"No data downloaded for {ticker_symbol}")
                 continue
 
-            # Ensure 'Close' column is a Series before passing to ta
-            close_series = pd.Series(data['Close'])
-            
-            # Calculate RSI
-            data['RSI'] = ta.momentum.RSIIndicator(close=close_series, window=14).rsi()
-            
-            # Drop rows with NaN RSI values which appear at the beginning
-            data.dropna(subset=['RSI'], inplace=True)
+            close_prices = data['Close'].squeeze()
+            volume = data['Volume'].squeeze()
 
-            if data.empty:
-                print(f"Not enough data to calculate RSI for {ticker}. Skipping.")
+            if not isinstance(close_prices, pd.Series):
+                print(f"Close prices for {ticker_symbol} is not a Series. Type: {type(close_prices)}")
                 continue
 
-            # Get latest RSI and Volume
-            latest_rsi = data['RSI'].iloc[-1]
-            latest_volume = data['Volume'].iloc[-1]
-            
-            # Get current timestamp
-            current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            rsi_series = ta.momentum.RSIIndicator(close=close_prices, window=14).rsi()
 
-            # Insert into signals table
-            insert_signal(current_timestamp, ticker, latest_rsi, latest_volume, 'PENDING')
+            latest_timestamp = data.index[-1].strftime('%Y-%m-%d %H:%M:%S')
+            latest_rsi = rsi_series.iloc[-1]
+            latest_volume = volume.iloc[-1]
+
+            cursor.execute("INSERT INTO signals (timestamp, ticker, rsi, volume, ai_thesis) VALUES (?, ?, ?, ?, ?)",
+                           (latest_timestamp, ticker_symbol, latest_rsi, latest_volume, 'PENDING'))
+            conn.commit()
+            print(f"Inserted data for {ticker_symbol}")
 
         except Exception as e:
-            print(f"Error processing {ticker}: {e}")
-            
+            print(f"Error processing {ticker_symbol}: {e}")
+
+    conn.close()
     print("SCANNER FULLY COMPLETE")
 
 if __name__ == '__main__':
