@@ -1,34 +1,44 @@
-import sqlite3, json, pandas as pd
+import sqlite3
+import json
+import pandas as pd
 
 DB_NAME = 'market_data.db'
 
 def run_strategy():
-    try:
-        with open('thresholds.json', 'r') as f:
-            thresh = json.load(f)
-    except FileNotFoundError:
-        print("Error: 'thresholds.json' not found. Please create it first.")
-        return
+    with open('thresholds.json', 'r') as f:
+        thresh = json.load(f)
 
     conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-
-    df = pd.read_sql_query("SELECT id, ticker, timestamp, rsi, ai_thesis FROM signals", conn)
-
-    if df.empty:
-        print('No signals found to evaluate.')
+    
+    try:
+        signals_df = pd.read_sql_query("SELECT id, ticker, timestamp, rsi, volume FROM signals", conn)
+    except pd.io.sql.DatabaseError:
+        print('No signals.')
         conn.close()
         return
 
-    # Sort by ticker and timestamp to ensure correct tail(1) for each group
-    df_sorted = df.sort_values(by=['ticker', 'timestamp'])
+    if signals_df.empty:
+        print('No signals.')
+        conn.close()
+        return
+
+    signals_df['timestamp'] = pd.to_datetime(signals_df['timestamp'])
     
-    # Get the latest signal for each ticker
-    latest_signals = df_sorted.groupby('ticker').tail(1)
+    # Get only the latest signal for each ticker
+    latest_signals = signals_df.sort_values(by=['ticker', 'timestamp']).groupby('ticker').tail(1)
+
+    cursor = conn.cursor()
 
     for index, row in latest_signals.iterrows():
         thesis = 'HOLD'
-        if float(row['rsi']) < thresh['rsi_buy']:
+        # Handle volume which might be stored as bytes
+        # Try to convert to int, if it fails, it might be bytes
+        try:
+            volume_value = int(row['volume'])
+        except ValueError:
+            volume_value = int.from_bytes(row['volume'], 'little') # Assuming 'little' endian for SQLite BLOBs
+
+        if float(row['rsi']) < thresh['rsi_buy'] and volume_value > thresh['volume_min']:
             thesis = 'BUY'
         elif float(row['rsi']) > thresh['rsi_sell']:
             thesis = 'SELL'
@@ -37,7 +47,7 @@ def run_strategy():
     
     conn.commit()
     conn.close()
-    print('STRATEGY EVALUATION COMPLETE')
+    print('ADVANCED STRATEGY EVALUATION COMPLETE')
 
 if __name__ == '__main__':
     run_strategy()
