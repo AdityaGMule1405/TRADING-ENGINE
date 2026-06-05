@@ -1,3 +1,6 @@
-yfinance
 pandas
+yfinance
 ta
+scikit-learn
+alpaca-trade-api
+python-dotenv
