@@ -1,51 +1,65 @@
 import sqlite3
-import time
-import random
+import os
 import pandas as pd
-
-class MockBrokerAPI:
-    def place_order(self, ticker, side, qty):
-        order_id = f"ORDER_{random.randint(10000, 99999)}"
-        print(f"Simulating API: Routing {side} order for {qty} shares of {ticker}...")
-        time.sleep(1) # Simulate network latency
-        print(f"Simulating API: Order {order_id} placed successfully for {ticker} ({side} {qty})")
-        return order_id
+import alpaca_trade_api as tradeapi
+from dotenv import load_dotenv
 
 def execute_trades():
-    conn = None
-    try:
-        conn = sqlite3.connect('market_data.db')
-        cursor = conn.cursor()
+    load_dotenv()
+    APCA_API_KEY_ID = os.environ.get('APCA_API_KEY_ID')
+    APCA_API_SECRET_KEY = os.environ.get('APCA_API_SECRET_KEY')
 
-        # Query the latest 3 rows from the signals table
-        cursor.execute("SELECT timestamp, ticker, ai_thesis FROM signals ORDER BY timestamp DESC LIMIT 3")
-        signals = cursor.fetchall()
+    if not APCA_API_KEY_ID or not APCA_API_SECRET_KEY:
+        print("API keys missing in .env. Halting execution.")
+        return
 
-        if not signals:
-            print("No new signals to process.")
-            return
+    api = tradeapi.REST(base_url='https://paper-api.alpaca.markets')
 
-        print(f"Processing {len(signals)} latest signals:")
-        mock_broker = MockBrokerAPI()
+    conn = sqlite3.connect('market_data.db')
+    cursor = conn.cursor()
 
-        for timestamp, ticker, ai_thesis in signals:
-            print(f"\nSignal: {ticker} at {timestamp} with thesis '{ai_thesis}'")
-            if ai_thesis == 'BUY' or ai_thesis == 'SELL':
-                print(f"Action: Placing a {ai_thesis} order for {ticker} (10 shares).")
-                mock_broker.place_order(ticker, ai_thesis, 10)
-            elif ai_thesis == 'HOLD' or ai_thesis == 'PENDING':
-                print("Action: No trade action taken for HOLD/PENDING signal.")
-            else:
-                print(f"Action: Unknown signal '{ai_thesis}'. No trade action taken.")
+    cursor.execute("""
+        SELECT
+            t1.ticker,
+            t1.ai_thesis
+        FROM ai_thesis t1
+        INNER JOIN (
+            SELECT
+                ticker,
+                MAX(timestamp) as max_timestamp
+            FROM ai_thesis
+            GROUP BY ticker
+        ) t2 ON t1.ticker = t2.ticker AND t1.timestamp = t2.max_timestamp;
+    """)
+    latest_theses = cursor.fetchall()
+    conn.close()
 
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-    finally:
-        if conn:
-            conn.close()
-            print("\nDatabase connection closed.")
+    if not latest_theses:
+        print("No AI theses found to process.")
+        return
+
+    for ticker, thesis in latest_theses:
+        if thesis == 'BUY':
+            try:
+                alpaca_symbol = ticker.replace('.NS', '')
+                order = api.submit_order(
+                    symbol=alpaca_symbol,
+                    qty=1,
+                    side='buy',
+                    type='market',
+                    time_in_force='gtc'
+                )
+                print(f"Submitted BUY order for {ticker}: {order.id}")
+            except tradeapi.rest.APIError as e:
+                print(f"Alpaca API Error for {ticker} (BUY): {e}")
+            except Exception as e:
+                print(f"An unexpected error occurred for {ticker} (BUY): {e}")
+        elif thesis == 'SELL':
+            print(f"Simulating SELL order for {ticker}")
+        else:
+            print(f"No action for {ticker} with thesis: {thesis}")
+
+    print("PAPER TRADING EXECUTION COMPLETE")
 
 if __name__ == '__main__':
     execute_trades()
